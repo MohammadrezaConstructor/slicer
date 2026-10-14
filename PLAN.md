@@ -123,3 +123,16 @@ Data flow: `Model (mesh) → [worker] slice → G-code text → parse → moves 
 9. UI panels: settings, stats/warnings, G-code, layer inspector.
 10. Lessons.
 11. Build single-file bundle, test in browser, write README.
+
+## 6. Phase 2 — realistic numbers (done)
+
+Goal: numbers that can be used for real planning, for two real printers (Prusa i3 MK3S+, Creality Ender-3).
+
+1. Printer + material profiles from the official PrusaSlicer profiles (`src/core/printers.js`).
+2. Firmware motion planner (classic jerk, per-axis limits, look-ahead) → time of every move (`src/core/planner.js`).
+3. Heater model, homing and bed-levelling times; time split into moving / heating / homing / dwell.
+4. Writer like a real slicer: machine limits in the header, printer start/end code, relative E,
+   per-feature acceleration, flow limit, PrusaSlicer cooling logic, bridges, top surfaces, Z-hop, M73 progress.
+5. Slicer: bead spacing, vertical-shell skin, connected infill, first-layer width, mesh repair.
+6. Import OBJ/3MF; unit hints; line rendering for huge prints.
+7. Validation against PrusaSlicer 2.9.6 — results in `VALIDATION.md`, regression fixtures in `test/fixtures/`.

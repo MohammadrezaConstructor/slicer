@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Plain-language explanations of G-code commands, for the G-code viewer and the simulator.
 import { KIND } from '../core/gcodeParser.js';
 
@@ -13,11 +15,15 @@ export const COMMANDS = {
   G21: { name: 'Millimetres', text: 'Coordinates are in millimetres.' },
   G28: { name: 'Home', text: 'Move each axis until it touches its endstop switch. Now the printer knows where X=0, Y=0, Z=0 are. Must be done before printing.' },
   G29: { name: 'Bed levelling', text: 'Probe the bed at several points to measure how flat it is; the printer then compensates while printing.' },
+  G80: { name: 'Mesh bed levelling (Prusa)', text: 'The probe measures the bed height at several points; while printing, Z is adjusted so the first layer is even everywhere. Takes about a minute.' },
   G90: { name: 'Absolute positioning', text: 'X, Y and Z values are coordinates on the bed (not distances from the current position).' },
   G91: { name: 'Relative positioning', text: 'X, Y and Z values are distances from the current position.' },
   G92: { name: 'Set position', text: 'Tell the printer "you are now at this position" without moving. "G92 E0" resets the filament counter to zero.' },
   M82: { name: 'Absolute extrusion', text: 'E values are the total length of filament since the last reset — each E must be larger than the previous one to extrude.' },
   M83: { name: 'Relative extrusion', text: 'E values are the length of filament for this move only.' },
+  M862: { name: 'Printer check (Prusa)', text: 'Checks that the G-code was made for this printer model and nozzle size; the printer warns you if not.' },
+  M900: { name: 'Linear advance', text: 'Pressure compensation: the extruder pushes a little extra when speeding up and a little less when slowing down, so corners are sharp.' },
+  M907: { name: 'Motor current', text: 'Sets the current of the stepper motors (here the extruder).' },
   M84: { name: 'Motors off', text: 'Switch off the stepper motors so the axes can be moved by hand.' },
   M18: { name: 'Motors off', text: 'Switch off the stepper motors.' },
   M104: { name: 'Set nozzle temperature', text: 'Start heating (or cooling) the nozzle to S °C and continue immediately, without waiting.' },
@@ -42,7 +48,7 @@ export const PARAMS = {
   X: 'X coordinate (left ↔ right)',
   Y: 'Y coordinate (front ↔ back)',
   Z: 'Z height (nozzle above the bed)',
-  E: 'Extruder: filament position in mm',
+  E: 'Extruder: filament in mm (with M83 the amount for this move, with M82 the running total)',
   F: 'Feed rate (speed) in mm per minute',
   S: 'Value (temperature in °C, fan speed 0–255, or seconds)',
   P: 'Time in milliseconds',
@@ -84,7 +90,7 @@ export function explainLine(raw, move) {
         : `Un-retract: push ${Math.abs(move.e).toFixed(2)} mm of filament forward again, ready to print.`;
     } else if (move && move.kind === KIND.EXTRUDE) {
       parts.push(`Print a line to ${xyz.join(', ')}`);
-      parts.push(`while pushing ${move.e.toFixed(4)} mm of filament (E goes up to ${get('E')})`);
+      parts.push(`while pushing ${move.e.toFixed(4)} mm of filament into the hot end`);
       text = parts.join(' ') + '.';
     } else if (xyz.length) {
       text = `Travel to ${xyz.join(', ')} without printing${get('Z') !== undefined && xyz.length === 1 ? ' (change height — usually a new layer)' : ''}.`;

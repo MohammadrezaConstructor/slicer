@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Thin wrapper around the Clipper polygon library.
 // Clipper works with integer coordinates, so millimetres are multiplied by SCALE (1 unit = 1 µm).
 // A "region" is an array of closed paths; outer contours run counter-clockwise, holes clockwise.
@@ -56,8 +58,16 @@ export function islands(paths) {
 /** Clip open polylines (e.g. infill lines) by a region; returns the pieces that lie inside. */
 export function clipLines(lines, region) {
   if (!lines.length || !region.length) return [];
+  // Clipper can loop forever on open paths with repeated points: remove them first
+  const clean = [];
+  for (const l of lines) {
+    const p = [l[0]];
+    for (let i = 1; i < l.length; i++) if (l[i].X !== p[p.length - 1].X || l[i].Y !== p[p.length - 1].Y) p.push(l[i]);
+    if (p.length >= 2) clean.push(p);
+  }
+  if (!clean.length) return [];
   const c = new C.Clipper();
-  c.AddPaths(lines, C.PolyType.ptSubject, false);
+  c.AddPaths(clean, C.PolyType.ptSubject, false);
   c.AddPaths(region, C.PolyType.ptClip, true);
   const tree = new C.PolyTree();
   c.Execute(C.ClipType.ctIntersection, tree, C.PolyFillType.pftNonZero, C.PolyFillType.pftNonZero);

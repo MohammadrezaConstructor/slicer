@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // The slicer: turns a 3D mesh into an ordered list of 2D extrusion paths for every layer.
 //
 //  1. layer heights            computeLayers()
@@ -11,8 +13,13 @@
 //  9. path ordering            nearest-neighbour, seam placement
 import { weld } from './mesh.js';
 import * as CL from './clip.js';
-import { fillRegion, parallelLines } from './infill.js';
+import { fillRegion, parallelLines, bridgeAngle } from './infill.js';
 import { FEATURE } from './features.js';
+
+/** Distance between the centres of two neighbouring lines of width w and height h. */
+export function spacingOf(w, h) {
+  return h < w ? w - h * (1 - Math.PI / 4) : w;
+}
 
 /** Layer list: z = top of the layer (where the nozzle is), sliceZ = where we cut the mesh (mid-layer). */
 export function computeLayers(zmax, S) {
@@ -82,6 +89,7 @@ function sliceActive(verts, idx, nVerts, active, z) {
   const targets = new Set(next.values());
   const visited = new Set();
   const loops = [];
+  const open = [];
   const follow = (start) => {
     const loop = [];
     let cur = start;
@@ -91,10 +99,38 @@ function sliceActive(verts, idx, nVerts, active, z) {
       loop.push(p[0], p[1]);
       cur = next.get(cur);
     }
-    if (loop.length >= 6) loops.push(loop);
+    if (cur !== start) {
+      // the chain does not come back to its start: the mesh has a hole or a defect here
+      if (loop.length >= 4) open.push(loop);
+    } else if (loop.length >= 6) loops.push(loop);
   };
   for (const k of next.keys()) if (!targets.has(k)) follow(k);
   for (const k of next.keys()) if (!visited.has(k)) follow(k);
+  // Repair: join open chains whose ends are close together (broken / non-manifold meshes).
+  if (open.length) {
+    // Each chain end is joined to the nearest start of another chain, unless its own start is
+    // nearer (then the loop is closed). This bridges holes left by missing faces.
+    const used = new Array(open.length).fill(false);
+    for (let i = 0; i < open.length; i++) {
+      if (used[i]) continue;
+      used[i] = true;
+      const chain = open[i].slice();
+      for (;;) {
+        const ex = chain[chain.length - 2], ey = chain[chain.length - 1];
+        let best = -1, bd = (ex - chain[0]) ** 2 + (ey - chain[1]) ** 2;
+        if (bd < 1e-6) break;
+        for (let j = 0; j < open.length; j++) {
+          if (used[j]) continue;
+          const d = (open[j][0] - ex) ** 2 + (open[j][1] - ey) ** 2;
+          if (d <= bd) { bd = d; best = j; } // on a tie, prefer joining another chain
+        }
+        if (best < 0) break;
+        used[best] = true;
+        for (const v of open[best]) chain.push(v);
+      }
+      if (chain.length >= 6) loops.push(chain);
+    }
+  }
   return loops;
 }
 
@@ -112,6 +148,8 @@ export function contourAtZ(mesh, z) {
  */
 export function slice(tris, S, progress = () => {}) {
   const w = S.lineWidth;
+  // the first layer may use a different line width
+  const wOf = (i) => (i === 0 ? S.firstLayerLineWidth || w : w);
   progress('Welding mesh', 0);
   const mesh = weld(tris);
   let zmax = 0;
@@ -140,17 +178,21 @@ export function slice(tris, S, progress = () => {}) {
     const list = [];
     const inners = [];
     const lost = [];
+    const wl = wOf(i);
+    // Neighbouring lines are closer than one line width: their rounded edges overlap
+    // (line spacing = width − height·(1 − π/4), as Flow::spacing in Slic3r/PrusaSlicer, AGPL-3.0).
+    const spl = spacingOf(wl, layers[i].h);
     for (const island of islandsPer[i]) {
       const walls = [];
       for (let k = 0; k < S.wallCount; k++) {
-        const loops = CL.offset(island, -(w / 2 + k * w));
+        const loops = CL.offset(island, -(wl / 2 + k * spl));
         if (!loops.length) break;
         walls.push(loops);
       }
-      const inner = S.wallCount > 0 ? CL.offset(island, -S.wallCount * w) : island;
+      const inner = S.wallCount > 0 ? CL.offset(island, -(wl + (S.wallCount - 1) * spl)) : island;
       // Anything thinner than one line width cannot hold even a single line.
-      const printable = CL.offset(CL.offset(island, -w / 2), w / 2);
-      const thin = CL.dropSmall(CL.difference(island, printable), w * w);
+      const printable = CL.offset(CL.offset(island, -wl / 2), wl / 2);
+      const thin = CL.dropSmall(CL.difference(island, printable), wl * wl);
       if (thin.length) lost.push(...thin);
       list.push({ island, walls, inner });
       inners.push(...inner);
@@ -167,19 +209,24 @@ export function slice(tris, S, progress = () => {}) {
 
   // --- 5: top/bottom skin ---
   progress('Top / bottom skin', 0.3);
-  const skin = new Array(n), sparse = new Array(n);
+  const skin = new Array(n), sparse = new Array(n), skinTop = new Array(n);
   for (let i = 0; i < n; i++) {
     const inner = innerAll[i];
-    if (!inner.length) { skin[i] = []; sparse[i] = []; continue; }
-    // Area that has material in ALL of the next `topLayers` layers is not a top surface.
+    if (!inner.length) { skin[i] = []; sparse[i] = []; skinTop[i] = []; continue; }
+    // Solid where the inside of this layer is not inside ALL of the next `topLayers` layers
+    // (and the `bottomLayers` below). On slopes this also keeps the shell thick enough
+    // ("ensure vertical shell thickness" in PrusaSlicer).
     let above = inner;
     for (let j = i + 1; j <= i + S.topLayers && above.length; j++) above = j < n ? CL.intersection(above, innerAll[j]) : [];
     let below = inner;
     for (let j = i - 1; j >= i - S.bottomLayers && below.length; j--) below = j >= 0 ? CL.intersection(below, innerAll[j]) : [];
     const covered = CL.intersection(above, below);
     let sk = CL.difference(inner, covered);
-    sk = CL.dropSmall(CL.opening(sk, w * 0.3), w * w);
+    // slivers narrower than one line width cannot hold a solid line
+    sk = CL.dropSmall(CL.opening(sk, w * 0.5), w * w);
     skin[i] = sk;
+    // the visible top surface: nothing at all above it (printed slower, like a real slicer)
+    skinTop[i] = sk.length ? CL.difference(inner, i + 1 < n ? regions[i + 1] : []) : [];
     sparse[i] = sk.length ? CL.difference(inner, sk) : inner;
     if (i % 20 === 0) progress('Top / bottom skin', 0.3 + 0.15 * (i / n));
   }
@@ -226,11 +273,14 @@ export function slice(tris, S, progress = () => {}) {
   const out = [];
   let pos = [0, 0];
   const overlap = (S.infillOverlap / 100) * w;
+  const connect = S.connectInfill !== false;
   for (let i = 0; i < n; i++) {
     const L = layers[i];
+    const w = wOf(i);
+    const lineSp = spacingOf(w, L.h);
     const paths = [];
-    const add = (type, closed, list) => {
-      const r = orderPaths(list.map((p) => ({ type, closed, pts: CL.toFloat(p) })).filter((p) => p.pts.length >= 4), pos, S.seam, i);
+    const add = (type, closed, list, extra = {}) => {
+      const r = orderPaths(list.map((p) => ({ type, closed, pts: CL.toFloat(p), width: w, ...extra })).filter((p) => p.pts.length >= 4), pos, S.seam, i);
       paths.push(...r);
       if (r.length) pos = endOf(r[r.length - 1]);
     };
@@ -272,6 +322,13 @@ export function slice(tris, S, progress = () => {}) {
       }
     }
 
+    // areas of this layer with nothing below them → bridges
+    let bridgeZone = [];
+    if (i > 0 && skin[i].length) {
+      const unsupported = CL.dropSmall(CL.opening(CL.difference(regions[i], CL.offset(regions[i - 1], w * 0.5)), w), 4 * w * w);
+      if (unsupported.length) bridgeZone = CL.intersection(skin[i], CL.offset(unsupported, 2));
+    }
+
     // islands, nearest first
     const todo = islandData[i].slice();
     while (todo.length) {
@@ -291,10 +348,23 @@ export function slice(tris, S, progress = () => {}) {
         if (clipInner.length) {
           const sk = skin[i].length ? CL.intersection(skin[i], clipInner) : [];
           const sp = sparse[i].length ? CL.intersection(sparse[i], clipInner) : [];
-          if (sk.length) add(FEATURE.SKIN, false, fillRegion(sk, 'solid', 100, w, i, L.z).open);
+          if (sk.length) {
+            let rest = sk;
+            // bridges: skin over air (nothing below in the previous layer), lines spanning the gap
+            const bz = bridgeZone.length ? CL.intersection(sk, bridgeZone) : [];
+            if (bz.length) {
+              const angle = bridgeAngle(bz, regions[i - 1], w);
+              add(FEATURE.SKIN, false, fillRegion(bz, 'solid', 100, w, i, L.z, { spacing: lineSp, angle, connect }).open, { bridge: true });
+              rest = CL.difference(sk, bz);
+            }
+            const top = skinTop[i].length && rest.length ? CL.intersection(rest, skinTop[i]) : [];
+            const mid = top.length ? CL.difference(rest, skinTop[i]) : rest;
+            if (mid.length) add(FEATURE.SKIN, false, fillRegion(mid, 'solid', 100, w, i, L.z, { spacing: lineSp, connect }).open);
+            if (top.length) add(FEATURE.SKIN, false, fillRegion(top, 'solid', 100, w, i, L.z, { spacing: lineSp, connect }).open, { top: true });
+          }
           if (sp.length && S.infillDensity > 0) {
             const solid = S.infillDensity >= 99;
-            const f = fillRegion(sp, solid ? 'solid' : S.infillPattern, solid ? 100 : S.infillDensity, w, i, L.z);
+            const f = fillRegion(sp, solid ? 'solid' : S.infillPattern, solid ? 100 : S.infillDensity, w, i, L.z, { connect, spacing: lineSp });
             add(solid ? FEATURE.SKIN : FEATURE.FILL, false, f.open);
             add(FEATURE.FILL, true, f.closed);
           }

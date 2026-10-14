@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 export function fmtTime(sec) {
   if (!isFinite(sec)) return '–';
   sec = Math.max(0, sec);

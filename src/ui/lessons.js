@@ -1,5 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Guided lessons. Each step explains one idea, offers "Try it" buttons that set up the app,
 // and asks a question to think about. Written for students who are new to 3D printing.
+
+import { profileSettings } from '../core/settings.js';
+import { PRINTER_PROFILES } from '../core/printers.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,7 +23,8 @@ function seekLayer(app, li) {
   app.simSeek(P.t0[L.firstExtrusion >= 0 ? L.firstExtrusion : L.first]);
 }
 
-const BASE = { support: false, adhesion: 'skirt', layerHeight: 0.2, firstLayerHeight: 0.25, wallCount: 2, topLayers: 4, bottomLayers: 3, infillDensity: 20, infillPattern: 'grid', retraction: true, combing: true, seam: 'aligned', fanSpeed: 100, minLayerTime: 8, nozzle: 0.4, lineWidth: 0.42, supportRoofLayers: 2, material: 'PLA', nozzleTemp: 210, bedTemp: 60 };
+// Every lesson starts from the real profile of the selected printer (MK3S or Ender-3) with PLA.
+const base = (app) => profileSettings(app.settings.printer in PRINTER_PROFILES ? app.settings.printer : 'mk3s', 'PLA');
 
 export const LESSONS = [
   {
@@ -31,7 +37,7 @@ export const LESSONS = [
         html: `<p>A 3D printer cannot read a 3D model. It only understands very simple instructions such as <i>"move to X=10, Y=20 while pushing 0.5 mm of plastic"</i>. These instructions are called <b>G-code</b>.</p>
           <p>The <b>slicer</b> translates the model into G-code. This app follows the same four steps as a real slicer — see the buttons at the top: <b>1 Prepare → 2 Preview → 3 Simulate → 4 G-code</b>.</p>
           <p>A model file (STL) is just a list of triangles describing the surface. Let's load the most famous first print.</p>`,
-        actions: [{ label: 'Load the calibration cube', run: (app) => { app.setSettings(BASE); app.loadSample('cube'); app.setMode('prepare'); } }],
+        actions: [{ label: 'Load the calibration cube', run: (app) => { app.setSettings(base(app)); app.loadSample('cube'); app.setMode('prepare'); } }],
       },
       {
         title: 'Cutting the model into layers',
@@ -74,7 +80,7 @@ export const LESSONS = [
       {
         title: 'A sphere at 0.2 mm',
         html: `<p>Load the sphere and look at the <b>print time</b> in the status bar at the bottom. Write it down.</p>`,
-        actions: [{ label: 'Sphere, 0.2 mm layers', run: (app) => { app.setSettings({ ...BASE, layerHeight: 0.2, firstLayerHeight: 0.25 }); app.loadSample('sphere'); app.setMode('preview'); } }],
+        actions: [{ label: 'Sphere, 0.2 mm layers', run: (app) => { app.setSettings({ ...base(app), layerHeight: 0.2, firstLayerHeight: 0.25 }); app.loadSample('sphere'); app.setMode('preview'); } }],
       },
       {
         title: 'Thicker and thinner layers',
@@ -105,10 +111,10 @@ export const LESSONS = [
         title: 'Walls',
         html: `<p>Look at a single layer of the cube from the top. Change the number of walls between 1 and 4.</p>`,
         actions: [
-          { label: '1 wall', run: (app) => { app.setSettings({ ...BASE, wallCount: 1 }); app.loadSample('cube'); app.setMode('preview').then(() => { check('pv-single', true); app.setLayer(50); app.scene.viewTop(); }); } },
+          { label: '1 wall', run: (app) => { app.setSettings({ ...base(app), wallCount: 1 }); app.loadSample('cube'); app.setMode('preview').then(() => { check('pv-single', true); app.setLayer(50); app.scene.viewTop(); }); } },
           { label: '4 walls', run: (app) => { app.setSettings({ wallCount: 4 }); app.showSetting('wallCount'); app.setMode('preview'); } },
         ],
-        think: 'Each wall is the outline shrunk inward by one line width (0.42 mm). How thick is the shell with 4 walls?',
+        think: 'Each wall is the outline shrunk inward by one line width (about 0.45 mm on the MK3S). How thick is the shell with 4 walls?',
       },
       {
         title: 'Infill density',
@@ -146,7 +152,7 @@ export const LESSONS = [
         title: 'How steep is too steep?',
         html: `<p>Each layer can stick out a little past the layer below, resting partly on it. Up to about 45–60° from vertical this works. Beyond that, the plastic has nothing to rest on.</p>
           <p>The overhang test leans more and more: 20°, 35°, 50°, 65°, 80°. Red faces need support.</p>`,
-        actions: [{ label: 'Load the overhang test', run: (app) => { app.setSettings({ ...BASE }); app.loadSample('overhang'); app.setMode('prepare'); check('show-overhang', true); } }],
+        actions: [{ label: 'Load the overhang test', run: (app) => { app.setSettings({ ...base(app) }); app.loadSample('overhang'); app.setMode('prepare'); check('show-overhang', true); } }],
       },
       {
         title: 'What happens without support?',
@@ -157,7 +163,7 @@ export const LESSONS = [
       {
         title: 'The T-shape',
         html: `<p>This T-shape has a bar that sticks out 16 mm on both sides. Watch what happens when the printer reaches the bar.</p>`,
-        actions: [{ label: 'Simulate without support', run: (app) => { app.setSettings({ ...BASE, support: false }); app.loadSample('tshape'); app.setMode('simulate').then(() => { app.setColorMode('filament'); seekLayer(app, 97); app.sim.speed = 20; $('sim-speed').value = '20'; app.simPlay(true); }); } }],
+        actions: [{ label: 'Simulate without support', run: (app) => { app.setSettings({ ...base(app), support: false }); app.loadSample('tshape'); app.setMode('simulate').then(() => { app.setColorMode('filament'); seekLayer(app, 97); app.sim.speed = 20; $('sim-speed').value = '20'; app.simPlay(true); }); } }],
         think: 'The plastic comes out of the nozzle as a soft string. What does gravity do to it?',
       },
       {
@@ -187,7 +193,7 @@ export const LESSONS = [
       {
         title: 'A bridge is supported at both ends',
         html: `<p>The top of the bridge test spans 20 mm of air. Unlike an overhang, every line starts and ends on a pillar — like a rope stretched between two posts.</p>`,
-        actions: [{ label: 'Preview: over air', run: (app) => { app.setSettings({ ...BASE }); app.loadSample('bridge'); app.setMode('preview').then(() => app.setColorMode('overair')); } }],
+        actions: [{ label: 'Preview: over air', run: (app) => { app.setSettings({ ...base(app) }); app.loadSample('bridge'); app.setMode('preview').then(() => app.setColorMode('overair')); } }],
         think: 'Yellow lines are bridges, red ones hang free. Why does a bridge work much better than an overhang of the same length?',
       },
       {
@@ -210,23 +216,23 @@ export const LESSONS = [
     steps: [
       {
         title: 'The start sequence',
-        html: `<p>Open the G-code tab. Every line is one command. Click the first lines: the printer heats the bed (M140/M190) and the nozzle (M104/M109), finds its home position (G28) and resets the extruder (G92 E0).</p>`,
-        actions: [{ label: 'Open the G-code', run: (app) => { app.setSettings({ ...BASE }); app.loadSample('cube'); app.setMode('gcode').then(() => app.gcodeView.select(5)); } }],
+        html: `<p>Open the G-code tab. Every line is one command. First come the <b>machine limits</b> (M201–M205: the firmware will never move faster or accelerate harder than this). Then the printer's own start sequence: it heats the bed (M140/M190) and the nozzle (M104/M109), finds its home position (G28), levels the bed (G80 on the MK3S) and draws a purge line.</p>`,
+        actions: [{ label: 'Open the G-code', run: (app) => { app.setSettings({ ...base(app) }); app.loadSample('cube'); app.setMode('gcode').then(() => app.gcodeView.search('M190')); } }],
         goal: 'gcode:line',
         think: 'Why does the code start heating the bed with M140 (no waiting) before it homes, and only later wait with M190?',
       },
       {
         title: 'A printing move',
-        html: `<p>Search for <code>;LAYER:5</code> and click the G1 lines below it. <b>X</b> and <b>Y</b> are where the nozzle goes, <b>F</b> is the speed in mm per minute, and <b>E</b> is how much filament has been pushed in total.</p>
+        html: `<p>Search for <code>;LAYER:5</code> and click the G1 lines below it. <b>X</b> and <b>Y</b> are where the nozzle goes, <b>F</b> is the speed in mm per minute, and <b>E</b> is how much filament this move pushes. (These printers use <i>relative</i> extrusion, set by M83; with M82 E would be the running total instead.)</p>
           <p>The slicer computes E from the volume of the line: <i>length × line width × layer height</i>, divided by the cross-section of the filament.</p>`,
         actions: [{ label: 'Find layer 5', run: (app) => { app.setMode('gcode').then(() => { $('gc-search').value = ';LAYER:5'; app.gcodeView.search(';LAYER:5'); }); } }],
-        think: 'A line 10 mm long, 0.42 mm wide and 0.2 mm high: how many mm of 1.75 mm filament does it need?',
+        think: 'A line 10 mm long, 0.45 mm wide and 0.2 mm high: how many mm of 1.75 mm filament does it need?',
       },
       {
         title: 'Change the code!',
         html: `<p>Press <b>Edit</b>, find <code>M190 S60</code> near the top and change it to <code>M190 S100</code>. Press <b>Apply &amp; simulate</b> and watch how long the printer now waits for the bed.</p>
           <p>Other experiments: delete the <code>M109</code> line, or change the F value of an outer wall.</p>`,
-        actions: [{ label: 'Go to the G-code', run: (app) => app.setMode('gcode').then(() => app.gcodeView.select(9)) }],
+        actions: [{ label: 'Go to the G-code', run: (app) => app.setMode('gcode').then(() => app.gcodeView.search('M190')) }],
         think: 'If M109 is deleted, the printer starts moving while the nozzle is still cold. What would happen on a real printer?',
       },
     ],
@@ -239,22 +245,22 @@ export const LESSONS = [
       {
         title: 'Travel moves',
         html: `<p>The thin wall test has several separate walls, so the nozzle must <b>travel</b> between them. Show travel moves: purple circles are <b>retractions</b> (filament pulled back so no plastic oozes out), green dots are where it is pushed back.</p>`,
-        actions: [{ label: 'Show travel', run: (app) => { app.setSettings({ ...BASE }); app.loadSample('thinwalls'); app.setMode('preview').then(() => { check('pv-travel', true); check('pv-single', true); app.setLayer(20); }); } }],
+        actions: [{ label: 'Show travel', run: (app) => { app.setSettings({ ...base(app) }); app.loadSample('thinwalls'); app.setMode('preview').then(() => { check('pv-travel', true); check('pv-single', true); app.setLayer(20); }); } }],
       },
       {
         title: 'Retraction and combing',
-        html: `<p>Retraction costs time. <b>Combing</b> skips it when the travel stays inside the part (a string would be hidden inside anyway). Turn combing and retraction on and off and look at the circles and the print time.</p>`,
+        html: `<p>Retraction costs time. <b>Combing</b> skips it when the travel stays inside the part (a string would be hidden inside anyway). PrusaSlicer's profiles retract on every travel longer than 1–2 mm; Cura combs by default. Turn combing and retraction on and off and compare the number of circles and the print time.</p>`,
         actions: [
-          { label: 'Combing off', run: (app) => { app.setSettings({ combing: false }); app.showSetting('combing'); app.setMode('preview'); } },
+          { label: 'Combing on', run: (app) => { app.setSettings({ combing: true }); app.showSetting('combing'); app.setMode('preview'); } },
           { label: 'Retraction off', run: (app) => { app.setSettings({ retraction: false }); app.showSetting('retraction'); app.setMode('preview'); } },
-          { label: 'Both on', run: (app) => { app.setSettings({ retraction: true, combing: true }); app.setMode('preview'); } },
+          { label: 'Profile default', run: (app) => { const b = base(app); app.setSettings({ retraction: true, combing: b.combing }); app.setMode('preview'); } },
         ],
         think: 'Without retraction, molten plastic oozes from the nozzle during travel. What would that look like on the print?',
       },
       {
         title: 'The seam',
         html: `<p>Every wall loop starts and ends at one point: the <b>seam</b> (black dots in the inspector). Compare "aligned", "nearest" and "random" on the cylinder.</p>`,
-        actions: ['aligned', 'nearest', 'random'].map((s) => ({ label: s, run: (app) => { app.setSettings({ ...BASE, seam: s }); if (app.model.name !== 'Cylinder') app.loadSample('cylinder'); app.showSetting('seam'); app.setMode('preview').then(() => { check('pv-single', false); check('pv-travel', false); }); } })),
+        actions: ['aligned', 'nearest', 'random'].map((s) => ({ label: s, run: (app) => { app.setSettings({ ...base(app), seam: s }); if (app.model.name !== 'Cylinder') app.loadSample('cylinder'); app.showSetting('seam'); app.setMode('preview').then(() => { check('pv-single', false); check('pv-travel', false); }); } })),
         think: 'Which option hides the seam best on a statue? Which on a mechanical part?',
       },
     ],
@@ -268,14 +274,14 @@ export const LESSONS = [
         title: 'A small footprint',
         html: `<p>The inverted cone touches the bed with only a tiny circle. Compare <b>skirt</b> (a loop around the part — it only primes the nozzle) and <b>brim</b> (loops attached to the part that make the footprint bigger).</p>`,
         actions: [
-          { label: 'Skirt', run: (app) => { app.setSettings({ ...BASE, adhesion: 'skirt' }); app.loadSample('invcone'); app.setMode('preview').then(() => app.setLayer(0)); } },
+          { label: 'Skirt', run: (app) => { app.setSettings({ ...base(app), adhesion: 'skirt' }); app.loadSample('invcone'); app.setMode('preview').then(() => app.setLayer(0)); } },
           { label: 'Brim', run: (app) => { app.setSettings({ adhesion: 'brim' }); app.showSetting('adhesion'); app.setMode('preview').then(() => app.setLayer(0)); } },
         ],
         think: 'Tall, thin parts often get knocked over by the nozzle. How does a brim help?',
       },
       {
         title: 'The first layer is special',
-        html: `<p>Simulate the first layer: it is printed slowly (${BASE.layerHeight} mm → 0.25 mm thick), the fan is off, and the bed is hot. All this helps the plastic stick.</p>`,
+        html: `<p>Simulate the first layer: it is printed slowly (20 mm/s instead of up to 80), with lower acceleration, the fan is off, and the bed is hot. All this helps the plastic stick.</p>`,
         actions: [{ label: 'Simulate the first layer', run: (app) => app.setMode('simulate').then(() => { app.setColorMode('feature'); seekLayer(app, 0); app.sim.speed = 5; $('sim-speed').value = '5'; app.simPlay(true); }) }],
         think: 'Look at the fan readout. When does the fan switch on, and why not from the start?',
       },
@@ -289,8 +295,8 @@ export const LESSONS = [
       {
         title: 'Walls that disappear',
         html: `<p>The thin wall test has walls of 0.2 to 2.0 mm. Look at the checks in the Preview panel and the red hatched areas in the layer inspector.</p>`,
-        actions: [{ label: 'Load and preview', run: (app) => { app.setSettings({ ...BASE }); app.loadSample('thinwalls'); app.setMode('preview').then(() => { check('pv-single', true); check('pv-travel', false); app.setLayer(20); }); } }],
-        think: 'With 0.42 mm wide lines, which walls survive? How many lines fit in the 1.2 mm wall?',
+        actions: [{ label: 'Load and preview', run: (app) => { app.setSettings({ ...base(app) }); app.loadSample('thinwalls'); app.setMode('preview').then(() => { check('pv-single', true); check('pv-travel', false); app.setLayer(20); }); } }],
+        think: 'With 0.45 mm wide lines, which walls survive? How many lines fit in the 1.2 mm wall?',
       },
       {
         title: 'Change the nozzle',
@@ -298,7 +304,7 @@ export const LESSONS = [
         actions: [
           { label: '0.25 mm nozzle', run: (app) => { app.setSettings({ nozzle: 0.25, lineWidth: 0.26, layerHeight: 0.12, firstLayerHeight: 0.15 }); app.showSetting('nozzle'); app.setMode('preview'); } },
           { label: '0.6 mm nozzle', run: (app) => { app.setSettings({ nozzle: 0.6, lineWidth: 0.63, layerHeight: 0.3, firstLayerHeight: 0.3 }); app.showSetting('nozzle'); app.setMode('preview'); } },
-          { label: 'back to 0.4 mm', run: (app) => { app.setSettings({ nozzle: 0.4, lineWidth: 0.42, layerHeight: 0.2, firstLayerHeight: 0.25 }); app.setMode('preview'); } },
+          { label: 'back to 0.4 mm', run: (app) => { const b = base(app); app.setSettings({ nozzle: 0.4, lineWidth: b.lineWidth, layerHeight: 0.2, firstLayerHeight: b.firstLayerHeight }); app.setMode('preview'); } },
         ],
         think: 'Compare detail and print time. When would you choose a bigger nozzle?',
       },
@@ -313,7 +319,7 @@ export const LESSONS = [
         title: 'The cone tip',
         html: `<p>Near the tip of the cone, each layer is tiny and would take only a second or two. The next layer would land on soft, still-hot plastic and the tip would melt into a blob.</p>
           <p>Colour by <b>layer time</b> and look at the "Time per layer" chart. The dashed red line is the <b>minimum layer time</b>.</p>`,
-        actions: [{ label: 'Cone: colour by layer time', run: (app) => { app.setSettings({ ...BASE, minLayerTime: 0 }); app.loadSample('cone'); app.setMode('preview').then(() => app.setColorMode('layertime')); } }],
+        actions: [{ label: 'Cone: colour by layer time', run: (app) => { app.setSettings({ ...base(app), minLayerTime: 0 }); app.loadSample('cone'); app.setMode('preview').then(() => app.setColorMode('layertime')); } }],
         think: 'With minimum layer time 0, how short are the last layers?',
       },
       {
@@ -324,6 +330,48 @@ export const LESSONS = [
           { label: 'Colour by speed', run: (app) => app.setMode('preview').then(() => app.setColorMode('speed')) },
         ],
         think: 'Another trick is to print two cones at the same time. Why does that help cooling?',
+      },
+    ],
+  },
+  {
+    id: 'realtime',
+    title: '11. Why does it take so long?',
+    summary: 'Acceleration, jerk, flow limits and heating — the real print time.',
+    steps: [
+      {
+        title: 'Speed in the G-code ≠ real speed',
+        html: `<p>The G-code asks for 80 mm/s infill, but the printer has a mass to move. It needs to <b>accelerate</b> (1000 mm/s² on the MK3S, only 500 on the Ender-3) and to slow down before every corner. The firmware only allows a small instant speed change at a corner — the <b>jerk</b> (8 mm/s).</p>
+          <p>Colour the print by <b>actual speed</b>: dark blue is fast, light blue is slow. Look at the "Print time" panel: on average the printer reaches only part of the requested speed.</p>`,
+        actions: [{ label: 'Cube: colour by actual speed', run: (app) => { app.setSettings(base(app)); app.loadSample('cube'); app.setMode('preview').then(() => { app.setColorMode('speed'); app.setLayer(50); }); } }],
+        think: 'Why are short infill lines slower than long walls, even though the walls are set to a lower speed?',
+      },
+      {
+        title: 'Doubling the speed',
+        html: `<p>Double every print speed and compare the print time. Then double the acceleration instead.</p>`,
+        actions: [
+          { label: 'All speeds × 2', run: (app) => { const b = base(app); app.setSettings({ ...b, outerWallSpeed: b.outerWallSpeed * 2, innerWallSpeed: b.innerWallSpeed * 2, infillSpeed: b.infillSpeed * 2, skinSpeed: b.skinSpeed * 2, topSkinSpeed: b.topSkinSpeed * 2, maxFeedX: Math.max(b.maxFeedX, 400), maxFeedY: Math.max(b.maxFeedY, 400), maxVolumetric: 40 }); app.setMode('preview'); } },
+          { label: 'Acceleration × 2', run: (app) => { const b = base(app); app.setSettings({ ...b, maxPrintAccel: b.maxPrintAccel * 2, maxAccelX: b.maxAccelX * 2, maxAccelY: b.maxAccelY * 2, defaultAccel: b.defaultAccel * 2, wallAccel: b.wallAccel * 2, infillAccel: b.infillAccel * 2 }); app.showSetting('infillAccel'); app.setMode('preview'); } },
+          { label: 'Back to the profile', run: (app) => { app.setSettings(base(app)); app.setMode('preview'); } },
+        ],
+        think: 'Doubling the speed does not halve the time. Which helps more on this small part: speed or acceleration? Why?',
+      },
+      {
+        title: 'The hot end limit',
+        html: `<p>Plastic needs time to melt. A standard hot end melts about <b>15 mm³ of PLA per second</b>. With 0.45 × 0.2 mm lines that allows ~180 mm/s; with 0.3 mm layers much less. Try PETG (8 mm³/s) and read the checks in the Preview panel.</p>`,
+        actions: [
+          { label: 'PETG, 0.3 mm layers', run: (app) => { app.setSettings(base(app)); app.setMaterial('PETG'); app.setSettings({ layerHeight: 0.3, infillSpeed: 150 }); app.showSetting('maxVolumetric'); app.setMode('preview'); } },
+        ],
+        think: 'Very fast printers use high-flow hot ends (25–30 mm³/s). Why would a fast printer be useless without one?',
+      },
+      {
+        title: 'Heating and homing',
+        html: `<p>Before the first line, the printer heats the bed, heats the nozzle, homes and levels the bed. Compare the <b>MK3S</b> (powerful bed, mesh levelling) with the <b>Ender-3</b> (slower bed, no levelling). The "Print time" panel shows each part.</p>`,
+        actions: [
+          { label: 'Prusa MK3S+', run: (app) => { app.setPrinter('mk3s'); app.setMode('preview'); } },
+          { label: 'Creality Ender-3', run: (app) => { app.setPrinter('ender3'); app.setMode('preview'); } },
+          { label: 'ABS on the Ender-3 (bed 100 °C)', run: (app) => { app.setPrinter('ender3'); app.setMaterial('ABS'); app.setMode('simulate').then(() => { app.simSeek(0); app.sim.speed = 60; $('sim-speed').value = '60'; app.simPlay(true); }); } },
+        ],
+        think: 'For a small part, how much of the total time is spent before the first line is printed?',
       },
     ],
   },

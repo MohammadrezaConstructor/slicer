@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Three.js scene: printer bed, build volume, axes, the model, and the "slicing plane" demo.
 // The scene is Z-up, exactly like the printer: X right, Y to the back, Z up.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export class Scene3D {
   constructor(container) {
@@ -19,16 +22,22 @@ export class Scene3D {
     this.controls.dampingFactor = 0.12;
     this.controls.screenSpacePanning = true;
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    // soft studio reflections so metal parts look like metal
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.scene.environmentIntensity = 0.55;
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.1));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.4);
     sun.position.set(-120, -200, 300);
     this.scene.add(sun);
     const fill = new THREE.DirectionalLight(0xffffff, 0.5);
     fill.position.set(200, 250, 120);
     this.scene.add(fill);
 
-    this.bedGroup = new THREE.Group();
+    this.bedGroup = new THREE.Group(); // the bed plate: on a "bed slinger" it moves in Y
     this.scene.add(this.bedGroup);
+    this.volumeGroup = new THREE.Group(); // build-volume outline, fixed to the frame
+    this.scene.add(this.volumeGroup);
     this.modelGroup = new THREE.Group();
     this.scene.add(this.modelGroup);
     this.printGroup = new THREE.Group();
@@ -88,7 +97,8 @@ export class Scene3D {
   setBed(x, y, z) {
     this.bed = { x, y, z };
     this.bedGroup.clear();
-    const plateMat = new THREE.MeshStandardMaterial({ color: this.dark ? 0x30363d : 0x3a3f45, roughness: 0.85, metalness: 0.1, emissive: 0xff3300, emissiveIntensity: 0 });
+    this.volumeGroup.clear();
+    const plateMat = new THREE.MeshStandardMaterial({ color: this.dark ? 0x30363d : 0x3a3f45, roughness: 0.85, metalness: 0.1, emissive: 0xff6a00, emissiveIntensity: 0 });
     this.plateMat = plateMat;
     const plate = new THREE.Mesh(new THREE.BoxGeometry(x, y, 2), plateMat);
     plate.position.set(x / 2, y / 2, -1.01);
@@ -107,7 +117,7 @@ export class Scene3D {
     );
     vol.position.set(x / 2, y / 2, z / 2);
     vol.computeLineDistances();
-    this.bedGroup.add(vol);
+    this.volumeGroup.add(vol);
 
     // axes at the origin (front-left corner): where X=0, Y=0, Z=0 is after homing (G28)
     const L = Math.min(x, y) * 0.18;
@@ -123,12 +133,19 @@ export class Scene3D {
     axis(new THREE.Vector3(0, 0, 1), 0x1c7ed6, 'Z');
     const front = textSprite('FRONT', this.dark ? 0x9aa5b1 : 0x56606b, 0.6);
     front.position.set(x / 2, -10, 0);
-    this.bedGroup.add(front);
+    this.volumeGroup.add(front);
+  }
+
+  /** Move the bed (and everything on it) along Y, as on the MK3S and Ender-3. */
+  setBedOffset(dy) {
+    if (this.bedGroup.position.y === dy) return;
+    this.bedGroup.position.y = this.printGroup.position.y = this.modelGroup.position.y = dy;
+    this.invalidate();
   }
 
   setBedHeat(fraction) {
     this.invalidate();
-    if (this.plateMat) this.plateMat.emissiveIntensity = Math.max(0, Math.min(1, fraction)) * 0.14;
+    if (this.plateMat) this.plateMat.emissiveIntensity = Math.max(0, Math.min(1, fraction)) * 0.07;
   }
 
   viewHome() {
@@ -136,6 +153,15 @@ export class Scene3D {
     const r = Math.max(x, y, z * 0.8);
     this.controls.target.set(x / 2, y / 2, Math.min(z, 40) / 3);
     this.camera.position.set(x / 2 - r * 0.15, -r * 0.95, r * 0.85);
+  }
+
+  /** View the whole printer from the front, a little from the left and above. */
+  viewPrinter() {
+    const { x, y, z } = this.bed;
+    const r = Math.max(x, y, z) + 120;
+    this.controls.target.set(x / 2, y / 2, z * 0.3);
+    this.camera.position.set(x / 2 - r * 0.45, y / 2 - r * 1.35, z * 0.3 + r * 0.75);
+    this.invalidate();
   }
 
   /** Point the camera at a box {min,max}. */

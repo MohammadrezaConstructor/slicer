@@ -10,7 +10,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "dependencies": {
     "clipper-lib": "^6.4.2",
@@ -20,5 +20,9 @@
     "vite": "^8.3.4",
     "vite-plugin-singlefile": "^2.3.3"
   },
-  "private": true
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MohammadrezaConstructor/slicer.git"
+  }
 }

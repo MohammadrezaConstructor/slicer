@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Slicer Lab — application controller: model → slice (in a worker) → preview → simulate → G-code.
 import './style.css';
 import SlicerWorker from './worker.js?worker&inline';
 import { Scene3D, ModelView } from './view/scene.js';
 import { PrintMesh, SEQ_RAMP } from './view/printMesh.js';
-import { PrinterHead } from './view/printer.js';
+import { Printer3D } from './view/printer.js';
 import { SettingsPanel } from './ui/settingsPanel.js';
 import { LayerInspector } from './ui/layerInspector.js';
 import { LayerTimeChart, renderFeatureBars } from './ui/charts.js';
@@ -11,20 +13,21 @@ import { GcodeView } from './ui/gcodePanel.js';
 import { explainLine, COMMANDS } from './ui/gcodeDocs.js';
 import { Lessons } from './ui/lessons.js';
 import { fmtTime, fmtClock, escapeHtml } from './ui/format.js';
-import { defaultSettings, MATERIAL_RANGES } from './core/settings.js';
+import { profileSettings, MATERIAL_RANGES } from './core/settings.js';
+import { PRINTER_PROFILES, materialSettings } from './core/printers.js';
 import { SAMPLES } from './core/primitives.js';
-import { parseSTL, toBinarySTL, bbox, volume, transform, placeOnBed, overhangAngles, rotationMatrix, matMul, IDENTITY, weld } from './core/mesh.js';
+import { parseSTL, parseOBJ, parse3MF, toBinarySTL, bbox, volume, transform, placeOnBed, overhangAngles, rotationMatrix, matMul, IDENTITY, weld } from './core/mesh.js';
 import { computeLayers, contourAtZ } from './core/slicer.js';
 import { SCALE } from './core/clip.js';
-import { KIND, moveAtTime, temperatureAt, valueAt, HEATERS } from './core/gcodeParser.js';
+import { KIND, moveAtTime, temperatureAt, valueAt, progressAt } from './core/gcodeParser.js';
 import { FEATURE_INFO } from './core/features.js';
 
 const $ = (id) => document.getElementById(id);
-const STORE_KEY = 'slicerlab.settings.v1';
+const STORE_KEY = 'slicerlab.settings.v2';
 
 class App {
   constructor() {
-    this.settings = defaultSettings();
+    this.settings = profileSettings('mk3s', 'PLA');
     try {
       const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
       if (saved) for (const k of Object.keys(this.settings)) if (k in saved) this.settings[k] = saved[k];
@@ -45,9 +48,9 @@ class App {
     this.scene.viewHome();
     this.modelView = new ModelView(this.scene);
     this.printMesh = new PrintMesh(this.scene);
-    this.head = new PrinterHead(this.scene);
+    this.head = new Printer3D(this.scene);
+    this.head.build(this.settings.printer, this.settings);
     this.head.setVisible(false);
-    this.head.setXray(true);
 
     this.settingsPanel = new SettingsPanel($('settings-panel'), this.settings, (changes) => this.setSettings(changes));
     this.inspector = new LayerInspector($('inspector'));
@@ -75,6 +78,7 @@ class App {
     });
     $('auto-slice').addEventListener('change', (e) => (this.autoSlice = e.target.checked));
     $('btn-lessons').addEventListener('click', () => this.lessons.toggle());
+    $('btn-about').addEventListener('click', () => showAbout());
     $('btn-theme').addEventListener('click', () => {
       document.documentElement.dataset.theme = this.isDark() ? 'light' : 'dark';
       this.scene.setTheme(this.isDark());
@@ -82,7 +86,7 @@ class App {
     });
     document.querySelectorAll('#view-buttons button').forEach((b) =>
       b.addEventListener('click', () => {
-        if (b.dataset.view === 'home') this.scene.viewHome();
+        if (b.dataset.view === 'home') this.mode === 'simulate' ? this.scene.viewPrinter() : this.scene.viewHome();
         else if (b.dataset.view === 'top') this.scene.viewTop();
         else this.fitView();
       }),
@@ -178,7 +182,10 @@ class App {
     $('sim-xray').addEventListener('change', (e) => this.head.setXray(e.target.checked));
     $('sim-sag').addEventListener('change', (e) => { this.pv.sag = this.sim.sag = e.target.checked; $('pv-sag').checked = e.target.checked; this.rebuildPrintMesh(); });
     $('sim-color').addEventListener('change', (e) => this.setColorMode(e.target.value));
-    $('sim-filament').addEventListener('input', (e) => this.printMesh.setFilamentColor(e.target.value));
+    $('sim-filament').addEventListener('input', (e) => {
+      this.printMesh.setFilamentColor(e.target.value);
+      this.head.setFilamentColor(e.target.value);
+    });
     this.buildReadouts();
 
     // ---- g-code
@@ -215,7 +222,7 @@ class App {
 
     // ---- keyboard
     window.addEventListener('keydown', (e) => {
-      if (e.target.closest('input, select, textarea')) return;
+      if (e.target.closest?.('input, select, textarea')) return;
       if (this.mode === 'simulate' && e.code === 'Space') {
         e.preventDefault();
         this.simPlay(!this.sim.playing);
@@ -234,11 +241,21 @@ class App {
     this.settingsPanel.refresh();
     if (bedChanged) {
       this.scene.setBed(this.settings.bedX, this.settings.bedY, this.settings.bedZ);
-      this.head.setBed(this.settings.bedX);
       this.updateModel();
     }
+    if (bedChanged || 'printer' in changes) this.head.build(this.settings.printer, this.settings);
     if ('supportAngle' in changes) this.recolorModel();
     if (!silent) this.markStale();
+  }
+
+  /** Load the real profile of a printer (keeps the material). */
+  setPrinter(id) {
+    this.setSettings(profileSettings(id, this.settings.material));
+  }
+
+  /** Switch material, with the values this printer's profile uses for it. */
+  setMaterial(material) {
+    this.setSettings({ material, ...materialSettings(this.settings.printer, material) });
   }
 
   markStale() {
@@ -266,7 +283,8 @@ class App {
       return;
     }
     try {
-      const tris = parseSTL(await file.arrayBuffer());
+      const buf = await file.arrayBuffer();
+      const tris = /.3mf$/i.test(file.name) ? await parse3MF(buf) : /.obj$/i.test(file.name) ? parseOBJ(new TextDecoder().decode(buf)) : parseSTL(buf);
       if (!tris.length) throw new Error('The file contains no triangles.');
       this.setModel(tris, name, `Your model "${file.name}" (${(tris.length / 9).toLocaleString()} triangles).`, null);
       this.setMode('prepare');
@@ -315,8 +333,18 @@ class App {
     $('scale').value = Math.round(M.scale * 1000) / 10;
     $('move-x').value = M.offset[0];
     $('move-y').value = M.offset[1];
-    $('fit-warning').hidden = M.fits;
-    $('fit-warning').textContent = M.fits ? '' : `The model does not fit in the build volume (${S.bedX} × ${S.bedY} × ${S.bedZ} mm). Scale it down or move it.`;
+    // Models are often exported in the wrong unit: offer the usual fixes.
+    const big = Math.max(...b.size);
+    let hint = '';
+    if (big < 3) hint = `The model is only ${big.toFixed(2)} mm big. Was it made in inches or centimetres? <button data-scale="25.4">× 25.4 (inch)</button> <button data-scale="10">× 10 (cm)</button>`;
+    else if (!M.fits) {
+      const fit = Math.floor(Math.min((S.bedX - 10) / b.size[0], (S.bedY - 10) / b.size[1], (S.bedZ - 1) / b.size[2]) * M.scale * 100);
+      hint = `The model does not fit in the build volume (${S.bedX} × ${S.bedY} × ${S.bedZ} mm). <button data-scale-abs="${fit / 100}">Scale to fit (${fit}%)</button>`;
+    }
+    $('fit-warning').hidden = !hint;
+    $('fit-warning').innerHTML = hint;
+    $('fit-warning').querySelectorAll('[data-scale]').forEach((btn) => (btn.onclick = () => this.setTransform({ scale: M.scale * +btn.dataset.scale })));
+    $('fit-warning').querySelectorAll('[data-scale-abs]').forEach((btn) => (btn.onclick = () => this.setTransform({ scale: +btn.dataset.scaleAbs })));
     this.modelView.setModel(M.placed, M.overhang, S.supportAngle, $('show-overhang').checked, !M.fits);
     this.recolorModel();
     this.updateCut();
@@ -446,14 +474,16 @@ class App {
     this.gcodeLines = res.gcode.split('\n');
     this.lineToMove = new Int32Array(this.gcodeLines.length).fill(-1);
     for (let m = P.n - 1; m >= 0; m--) this.lineToMove[P.line[m]] = m;
+    this.inspector.setData(P, res.meta);
     this.rebuildPrintMesh();
     this.gcodeView.setText(res.gcode, res.name || 'G-code');
-    this.inspector.setData(P, res.meta);
 
     // stats bar
     const S = this.settings;
     const grams = this.filamentGrams(P.stats.filament);
     $('st-time').textContent = fmtTime(P.stats.time);
+    $('st-time').title = `Moving ${fmtTime(P.stats.motionTime)} + heating ${fmtTime(P.stats.heatTime)} + homing/levelling ${fmtTime(P.stats.homeTime)} + waiting ${fmtTime(P.stats.dwellTime)}`;
+    this.renderTimeBreakdown();
     $('st-fil').textContent = `${(P.stats.filament / 1000).toFixed(2)} m`;
     $('st-weight').textContent = `${grams.toFixed(1)} g`;
     $('st-cost').textContent = (grams / 1000 * S.filamentCost).toFixed(2);
@@ -481,7 +511,7 @@ class App {
     if (!this.result) return;
     this.printMesh.colorMode = this.mode === 'simulate' ? this.sim.color : this.pv.color;
     this.printMesh.build(this.result.parsed, this.result.analysis, { sag: this.mode === 'simulate' ? this.sim.sag : this.pv.sag });
-    if (this.printMesh.tooBig) this.toast('This print has too many lines to show in 3D. Use the layer inspector, or a coarser setting.');
+    if (this.printMesh.lineMode) this.toast('Large print: shown as thin lines instead of 3D plastic to save memory.');
     this.updateLegend();
     if (this.mode === 'simulate') this.updateSim(true);
     else this.updatePreview();
@@ -530,6 +560,18 @@ class App {
       if (S.infillDensity === 0) add('info', 'Infill is 0%: the part is hollow. The top layers have nothing to rest on.');
       if (S.adhesion === 'none' && P.layers[0] && this.firstLayerArea() < 150) add('info', 'The part touches the bed only with a small area and has no brim: it might come loose during printing.');
       if (S.fanSpeed === 0 && A.longBridgeLength + A.overAirLength > 0) add('info', 'The fan is off but there are bridges/overhangs: without cooling they sag even more.');
+      // the hot end can only melt so much plastic per second
+      const bead = (S.lineWidth - S.layerHeight) * S.layerHeight + (Math.PI * S.layerHeight ** 2) / 4;
+      const vMax = S.maxVolumetric / bead;
+      const capped = [['infill', S.infillSpeed], ['solid infill', S.skinSpeed], ['inner wall', S.innerWallSpeed], ['outer wall', S.outerWallSpeed]].filter(([, v]) => v > vMax + 0.5);
+      if (capped.length) add('info', `The hot end can melt at most ${S.maxVolumetric} mm³/s of ${S.material}. With ${S.lineWidth} × ${S.layerHeight} mm lines that is ${vMax.toFixed(0)} mm/s, so the ${capped.map((c) => c[0]).join(', ')} speed is reduced to ${vMax.toFixed(0)} mm/s.`);
+      if (S.travelSpeed > Math.min(S.maxFeedX, S.maxFeedY)) add('info', `Travel speed ${S.travelSpeed} mm/s is above the printer's limit (${Math.min(S.maxFeedX, S.maxFeedY)} mm/s, set by M203): the firmware moves at its limit instead.`);
+      if (S.retraction && S.retractSpeed > S.maxFeedE) add('info', `Retraction speed ${S.retractSpeed} mm/s is above the extruder limit (${S.maxFeedE} mm/s): the firmware retracts more slowly.`);
+    }
+    if (res.source !== 'slicer') {
+      const macros = P.unknown.filter((u) => /^[A-Z_]{4,}/.test(u.cmd));
+      if (macros.length) add('warn', `This G-code calls printer macros (${macros.map((u) => u.cmd).slice(0, 4).join(', ')}) that run code stored in the printer. The simulator cannot know what they do; their time is not included.`);
+      if (P.info.printerModel) add('info', `The file was made for "${P.info.printerModel}". The simulation uses the ${PRINTER_PROFILES[S.printer]?.label || 'custom'} limits unless the file sets its own (M201/M203/M204/M205).`);
     }
     if (A.overAirLength > 30) {
       const ls = A.overAirLayers;
@@ -540,6 +582,33 @@ class App {
     if (res.source === 'slicer' && S.minLayerTime > 0 && shortLayers > 0) add('info', `${shortLayers} layer(s) still take less than ${S.minLayerTime} s (the minimum speed limits the slow-down). The plastic may not cool enough.`);
     if (!W.length) add('good', 'No problems found.');
     $('warnings').innerHTML = W.map((w) => `<li class="${w.level}"><span>${escapeHtml(w.text)}</span></li>`).join('');
+  }
+
+  renderTimeBreakdown() {
+    const res = this.result, P = res.parsed, st = P.stats;
+    const prof = PRINTER_PROFILES[res.settings.printer];
+    const row = (label, v, bold) => `<div class="kv"><span>${label}</span>${bold ? '<b>' : '<span>'}${v}${bold ? '</b>' : '</span>'}</div>`;
+    let html = row('Moving (printing + travel)', fmtTime(st.motionTime)) +
+      row('Heating up (M190 / M109)', fmtTime(st.heatTime)) +
+      row('Homing and bed levelling', fmtTime(st.homeTime)) +
+      (st.dwellTime > 0 ? row('Waiting (G4)', fmtTime(st.dwellTime)) : '') +
+      row('Total, start to finish', fmtTime(st.time), true);
+    // how much speed is lost to acceleration: the printer rarely reaches the speed in the G-code
+    let d = 0, tReal = 0, tNominal = 0;
+    for (let m = 0; m < P.n; m++) {
+      if (P.kind[m] !== KIND.EXTRUDE) continue;
+      const len = Math.hypot(P.px[m + 1] - P.px[m], P.py[m + 1] - P.py[m]);
+      d += len;
+      tReal += P.dur[m];
+      tNominal += len / P.feed[m];
+    }
+    if (tReal > 0) html += `<p class="small">Printing moves reach on average <b>${Math.round((tNominal / tReal) * 100)}%</b> of the speed set in the G-code: every line has to accelerate and slow down again at corners.</p>`;
+    if (P.info.estimate && res.source !== 'slicer') {
+      const diff = ((st.motionTime - P.info.estimate) / P.info.estimate) * 100;
+      html += `<p class="small">The file's own estimate (${escapeHtml(P.info.generator || 'slicer')}): <b>${fmtTime(P.info.estimate)}</b> (${P.info.estimateSource}). Our moving time differs by ${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%.</p>`;
+    }
+    html += `<p class="muted small">Moving time follows the firmware's motion planning (acceleration, jerk and speed limits of the ${prof ? prof.label : 'custom printer'}); it matches PrusaSlicer's estimator within 0.1%. Heating and homing are typical values for this printer${res.source === 'slicer' ? '' : '; select the printer the file was made for in the settings'}.</p>`;
+    $('time-breakdown').innerHTML = html;
   }
 
   firstLayerArea() {
@@ -579,7 +648,10 @@ class App {
     this.applyModeVisibility();
     this.updateLegend();
     if (mode === 'preview') this.updatePreview();
-    if (mode === 'simulate') this.updateSim(true);
+    if (mode === 'simulate') {
+      if (prev !== 'simulate') this.scene.viewPrinter();
+      this.updateSim(true);
+    }
     if (mode === 'prepare') this.updateCut();
     else this.modelView.setCut(null);
     if (mode === 'gcode') this.gcodeView.render();
@@ -652,11 +724,13 @@ class App {
     const { m0, m1, end } = info;
     let text = `${end - m0} of ${m1 - m0} moves in this layer.`;
     const m = end - 1;
-    if (m >= m0) {
+    if (m >= m0 && m < P.n) {
       const k = P.kind[m];
       const len = Math.hypot(P.px[m + 1] - P.px[m], P.py[m + 1] - P.py[m]);
-      if (k === KIND.EXTRUDE) text = `Move ${end - m0}/${m1 - m0}: printing <b>${FEATURE_INFO[P.type[m]].label.toLowerCase()}</b>, ${len.toFixed(1)} mm at ${P.feed[m].toFixed(0)} mm/s.`;
-      else if (k === KIND.TRAVEL) text = `Move ${end - m0}/${m1 - m0}: <b>travel</b> ${len.toFixed(1)} mm (no plastic) at ${P.feed[m].toFixed(0)} mm/s.`;
+      const avg = P.dur[m] > 0 ? len / P.dur[m] : 0;
+      const sp = `${P.feed[m].toFixed(0)} mm/s requested, ${avg.toFixed(0)} mm/s average (acceleration), ${P.dur[m].toFixed(2)} s`;
+      if (k === KIND.EXTRUDE) text = `Move ${end - m0}/${m1 - m0}: printing <b>${FEATURE_INFO[P.type[m]].label.toLowerCase()}</b>, ${len.toFixed(1)} mm: ${sp}.`;
+      else if (k === KIND.TRAVEL) text = `Move ${end - m0}/${m1 - m0}: <b>travel</b> ${len.toFixed(1)} mm (no plastic): ${sp}.`;
       else if (k === KIND.RETRACT) text = `Move ${end - m0}/${m1 - m0}: <b>${P.e[m] < 0 ? 'retract' : 'un-retract'}</b> ${Math.abs(P.e[m]).toFixed(2)} mm of filament.`;
     }
     $('insp-info').innerHTML = text;
@@ -720,7 +794,7 @@ class App {
     }
     if (this.mode === 'simulate' && this.result) {
       const P = this.result.parsed;
-      const nz = temperatureAt(P.tempEvents.nozzle, HEATERS.nozzle, this.sim.t).temp;
+      const nz = temperatureAt(P.tempEvents.nozzle, P.heaters.nozzle, this.sim.t).temp;
       this.head.update(dt, nz, valueAt(P.fanEvents, this.sim.t));
     }
   }
@@ -730,7 +804,8 @@ class App {
     const P = this.result.parsed;
     const t = this.sim.t;
     const m = moveAtTime(P, t);
-    const f = P.n ? Math.max(0, Math.min(1, (t - P.t0[m]) / Math.max(1e-9, P.dur[m]))) : 0;
+    // position along the move follows the planned accelerate–cruise–decelerate profile
+    const f = P.n ? progressAt(P, m, t - P.t0[m]) : 0;
     const done = f >= 1 ? m + 1 : m;
     const x = P.px[m] + (P.px[m + 1] - P.px[m]) * f;
     const y = P.py[m] + (P.py[m + 1] - P.py[m]) * f;
@@ -740,12 +815,14 @@ class App {
     this.head.setPosition(x, y, z);
     if (this.sim.follow) {
       const tgt = this.scene.controls.target;
-      const dx = x - tgt.x, dy = y - tgt.y, dz = z - tgt.z;
+      // the bed moves in Y, so follow the nozzle where it really is: fixed Y, moving X and Z
+      const nw = this.head.nozzleWorld();
+      const dx = nw.x - tgt.x, dy = nw.y - tgt.y, dz = nw.z - tgt.z;
       const k = force ? 1 : 0.08;
       tgt.set(tgt.x + dx * k, tgt.y + dy * k, tgt.z + dz * k);
       this.scene.camera.position.set(this.scene.camera.position.x + dx * k, this.scene.camera.position.y + dy * k, this.scene.camera.position.z + dz * k);
     }
-    const bedT = temperatureAt(P.tempEvents.bed, HEATERS.bed, t);
+    const bedT = temperatureAt(P.tempEvents.bed, P.heaters.bed, t);
     this.scene.setBedHeat((bedT.temp - 25) / 80);
 
     // DOM updates at ~12 fps
@@ -756,7 +833,7 @@ class App {
     $('time-range').value = total ? Math.round((t / total) * 1000) : 0;
     $('time-now').textContent = fmtClock(t);
     $('time-total').textContent = fmtClock(total);
-    const nozT = temperatureAt(P.tempEvents.nozzle, HEATERS.nozzle, t);
+    const nozT = temperatureAt(P.tempEvents.nozzle, P.heaters.nozzle, t);
     const fan = valueAt(P.fanEvents, t);
     const k = P.kind[m];
     let doing = 'Idle';
@@ -769,7 +846,7 @@ class App {
     r.doing.textContent = doing;
     r.layer.textContent = `${li + 1} / ${P.layers.length}`;
     r.pos.textContent = `${x.toFixed(1)}, ${y.toFixed(1)}, ${z.toFixed(2)}`;
-    r.speed.textContent = k === KIND.WAIT || k === KIND.HOME ? '–' : `${P.feed[m].toFixed(0)} mm/s`;
+    r.speed.textContent = k === KIND.WAIT || k === KIND.HOME ? '–' : `${speedNow(P, m, t - P.t0[m]).toFixed(0)} of ${P.feed[m].toFixed(0)} mm/s`;
     let fil = 0;
     // filament used so far: cumulative sum is cheap enough to compute lazily via a prefix array
     if (!this.filPrefix || this.filPrefix.P !== P) {
@@ -844,6 +921,61 @@ class App {
   showSetting(key) {
     this.settingsPanel.highlight(key);
   }
+}
+
+/** Instantaneous speed (mm/s) tau seconds into move m, from the planned trapezoid. */
+function speedNow(P, m, tau) {
+  const a = P.accel[m], v0 = P.vEntry[m], vc = P.vPeak[m];
+  if (!(a > 0)) return P.dur[m] > 0 ? Math.hypot(P.px[m + 1] - P.px[m], P.py[m + 1] - P.py[m], P.pz[m + 1] - P.pz[m]) / P.dur[m] : 0;
+  const tAcc = vc > v0 ? (vc - v0) / a : 0;
+  const tCruise = vc > 0 ? (P.decAfter[m] - P.accUntil[m]) / vc : 0;
+  if (tau <= tAcc) return v0 + a * tau;
+  if (tau <= tAcc + tCruise) return vc;
+  return Math.max(0, vc - a * (tau - tAcc - tCruise));
+}
+
+const SOURCE_URL = 'https://github.com/MohammadrezaConstructor/slicer';
+
+/** Licence notice, source code link and credits (required by the AGPL for interactive programs). */
+function showAbout() {
+  const modal = $('modal');
+  modal.innerHTML = `<div class="box" role="dialog" aria-modal="true" aria-labelledby="about-title">
+    <h2 id="about-title">Slicer Lab</h2>
+    <p>A teaching slicer and 3D-printing simulator.<br>Copyright © 2026 The Slicer Lab authors.</p>
+    <p>This program is free software: you can redistribute it and/or modify it under the terms of the
+      <b>GNU Affero General Public License</b> as published by the Free Software Foundation, either version 3 of the
+      License, or (at your option) any later version. It is distributed WITHOUT ANY WARRANTY; without even the implied
+      warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+      <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL v3</a> for details.</p>
+    <p>Source code: <a href="${SOURCE_URL}" target="_blank" rel="noopener">${SOURCE_URL}</a></p>
+    <h3>Based on and with thanks to</h3>
+    <ul>
+      <li><a href="https://github.com/prusa3d/PrusaSlicer" target="_blank" rel="noopener">PrusaSlicer</a> (AGPL-3.0, © Prusa Research and contributors; Slic3r © Alessandro Ranellucci):
+        the print-time estimator is derived from its GCodeProcessor; its cooling logic and line-spacing formula are used.</li>
+      <li><a href="https://github.com/MarlinFirmware/Marlin" target="_blank" rel="noopener">Marlin</a> and <a href="https://github.com/grbl/grbl" target="_blank" rel="noopener">Grbl</a> (GPL-3.0): the motion planning algorithm.</li>
+      <li>PrusaSlicer 2.9.6 system profiles (AGPL-3.0): the machine limits, print settings, start/end G-code and material data of the two printers.</li>
+      <li><a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> (MIT, © three.js authors): 3D graphics.</li>
+      <li><a href="https://www.angusj.com" target="_blank" rel="noopener">Clipper</a> by Angus Johnson, JavaScript translation by Timo (Boost Software License 1.0): polygon operations.</li>
+      <li>Heater measurements: <a href="https://3dprinterly.com/3d-printer-heated-bed-max-temperatures-real-examples/" target="_blank" rel="noopener">3DPrinterly</a>.</li>
+    </ul>
+    <p class="small"><b>Trademarks:</b> Prusa, Original Prusa, PrusaSlicer and Prusament are trademarks of Prusa Research a.s.; Creality and Ender are trademarks of Shenzhen Creality 3D Technology Co., Ltd.; other names belong to their owners. They are used only to identify printers and programs. Slicer Lab is <b>not affiliated with or endorsed by</b> these companies. The printers shown are simplified models made from basic shapes; no manufacturer drawings or logos are used.</p>
+    <details><summary>Third-party notices and licence texts</summary><pre class="licence-text" id="about-third"></pre></details>
+    <details><summary>GNU Affero General Public License v3</summary><pre class="licence-text" id="about-agpl"></pre></details>
+    <p style="text-align:right"><button class="primary" id="about-close">Close</button></p>
+  </div>`;
+  const text = (id) => document.getElementById(id)?.textContent.trim() || 'See the source code repository.';
+  $('about-third').textContent = text('licence-third-party');
+  $('about-agpl').textContent = text('licence-agpl');
+  modal.hidden = false;
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => {
+    modal.hidden = true;
+    window.removeEventListener('keydown', onKey);
+  };
+  window.addEventListener('keydown', onKey);
+  $('about-close').onclick = close;
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  $('about-close').focus();
 }
 
 function download(blob, name) {

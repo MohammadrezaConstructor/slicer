@@ -1,4 +1,11 @@
 <!doctype html>
+<!--
+  Slicer Lab — a teaching slicer and 3D-printing simulator
+  Copyright (C) 2026 The Slicer Lab authors
+  Licensed under the GNU Affero General Public License v3.0 or later.
+  Source code: https://github.com/MohammadrezaConstructor/slicer
+  Third-party notices (PrusaSlicer, Marlin, three.js, Clipper): see THIRD_PARTY_NOTICES.md in the source.
+-->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -59,7 +66,7 @@
           <div class="overlay progress" id="progress" hidden>
             <div class="progress-box"><div id="progress-text">Slicing…</div><div class="bar"><div id="progress-bar"></div></div></div>
           </div>
-          <div class="overlay drop-hint" id="drop-hint" hidden>Drop an STL or G-code file</div>
+          <div class="overlay drop-hint" id="drop-hint" hidden>Drop an STL, OBJ, 3MF or G-code file</div>
         </section>
 
         <aside class="right" id="right-panel">
@@ -70,9 +77,9 @@
               <div id="sample-list" class="sample-list"></div>
               <p id="sample-about" class="muted small"></p>
               <div class="row">
-                <button id="btn-open">Open STL…</button>
+                <button id="btn-open" title="STL, OBJ, 3MF or G-code">Open file…</button>
                 <button id="btn-save-stl" title="Save the placed model as STL">Save STL</button>
-                <input type="file" id="file-input" accept=".stl,.gcode,.gco,.g" hidden />
+                <input type="file" id="file-input" accept=".stl,.obj,.3mf,.gcode,.gco,.g" hidden />
               </div>
             </section>
             <section class="card">
@@ -121,7 +128,7 @@
                 <select id="pv-color">
                   <option value="feature">Feature type</option>
                   <option value="overair">Over air? (support check)</option>
-                  <option value="speed">Speed</option>
+                  <option value="speed">Actual speed</option>
                   <option value="layertime">Layer time</option>
                   <option value="filament">Filament colour</option>
                 </select>
@@ -136,6 +143,10 @@
               </div>
               <p class="small" id="insp-info"></p>
               <div class="mini-legend" id="insp-legend"></div>
+            </section>
+            <section class="card">
+              <h3>Print time</h3>
+              <div id="time-breakdown"></div>
             </section>
             <section class="card">
               <h3>Time per layer</h3>
@@ -182,8 +193,9 @@
             <section class="card">
               <h3>View</h3>
               <label class="check"><input type="checkbox" id="sim-follow" /> Camera follows the nozzle</label>
+              <p class="muted small">Like the real MK3S and Ender-3, the head moves left–right (X), the gantry up–down (Z), and the <b>bed</b> moves front–back (Y).</p>
               <label class="check"><input type="checkbox" id="sim-travel" /> Show travel moves</label>
-              <label class="check"><input type="checkbox" id="sim-xray" checked /> See-through print head</label>
+              <label class="check"><input type="checkbox" id="sim-xray" /> See-through print head</label>
               <label class="check"><input type="checkbox" id="sim-sag" checked /> Physics: lines over air sag</label>
               <label class="field"><span>Colour</span>
                 <select id="sim-color">
@@ -230,6 +242,7 @@
         <span class="stat"><em>Cost</em><b id="st-cost">–</b></span>
         <span class="stat"><em>Layers</em><b id="st-layers">–</b></span>
         <span id="st-msg" class="muted"></span>
+        <button id="btn-about" class="link-btn">About &amp; licence</button>
       </footer>
 
       <div id="lessons" class="lessons" hidden></div>

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Mesh utilities. A mesh is a "triangle soup": Float32Array with 9 numbers per triangle
 // (x0 y0 z0 x1 y1 z1 x2 y2 z2). This is exactly what an STL file stores.
 
@@ -184,6 +186,153 @@ export function overhangAngles(tris, bedZ = 0) {
     const zmax = Math.max(tris[i * 9 + 2], tris[i * 9 + 5], tris[i * 9 + 8]);
     if (zmax < bedZ + 0.05) out[i] = -90;
     else out[i] = (Math.asin(Math.max(-1, Math.min(1, -nz))) * 180) / Math.PI;
+  }
+  return out;
+}
+
+/** Wavefront OBJ (vertices + faces; polygons are split into triangles). */
+export function parseOBJ(text) {
+  const v = [];
+  const out = [];
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('v ')) {
+      const p = line.split(/\s+/);
+      v.push([+p[1], +p[2], +p[3]]);
+    } else if (line.startsWith('f ')) {
+      const idx = line.split(/\s+/).slice(1).map((t) => {
+        const i = parseInt(t.split('/')[0], 10);
+        return i < 0 ? v.length + i : i - 1;
+      });
+      for (let k = 1; k + 1 < idx.length; k++) {
+        for (const i of [idx[0], idx[k], idx[k + 1]]) {
+          const p = v[i];
+          if (!p) throw new Error('Bad face index in OBJ');
+          out.push(p[0], p[1], p[2]);
+        }
+      }
+    }
+  }
+  if (!out.length) throw new Error('No faces found in OBJ file');
+  return new Float32Array(out);
+}
+
+/**
+ * 3MF (the project format of PrusaSlicer, Bambu Studio, Cura…): a ZIP file with XML meshes.
+ * Supports meshes, components (also in separate files) and build-item transforms.
+ */
+export async function parse3MF(buffer) {
+  const files = await unzip(buffer, (name) => /\.model$/i.test(name));
+  const mainName = Object.keys(files).find((n) => /^3D\/3dmodel\.model$/i.test(n)) || Object.keys(files)[0];
+  if (!mainName) throw new Error('No 3D model inside the 3MF file');
+  const docs = {};
+  const doc = (name) => {
+    const key = name.replace(/^\//, '');
+    if (!docs[key]) {
+      const xml = files[Object.keys(files).find((n) => n.toLowerCase() === key.toLowerCase())];
+      if (!xml) throw new Error('Missing part ' + name);
+      docs[key] = parseModelXML(xml);
+    }
+    return docs[key];
+  };
+  const main = doc(mainName);
+  const scale = { micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000 }[main.unit] || 1;
+  const out = [];
+  const emit = (docName, id, M) => {
+    const d = doc(docName), obj = d.objects[id];
+    if (!obj) return;
+    if (obj.vertices) {
+      const V = obj.vertices;
+      for (const [a, b, c] of obj.triangles) {
+        for (const i of [a, b, c]) {
+          const x = V[i * 3], y = V[i * 3 + 1], z = V[i * 3 + 2];
+          out.push((x * M[0] + y * M[3] + z * M[6] + M[9]) * scale, (x * M[1] + y * M[4] + z * M[7] + M[10]) * scale, (x * M[2] + y * M[5] + z * M[8] + M[11]) * scale);
+        }
+      }
+    }
+    for (const c of obj.components || []) emit(c.path || docName, c.objectid, mul3mf(c.transform, M));
+  };
+  for (const item of main.build) emit(mainName, item.objectid, item.transform);
+  if (!out.length) throw new Error('The 3MF file contains no triangles');
+  return new Float32Array(out);
+}
+
+const ID3 = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+const parseTransform = (s) => (s ? s.trim().split(/\s+/).map(Number) : ID3);
+// 3MF matrices are 4x3, applied to row vectors: p' = p · A, then · B
+function mul3mf(A, B) {
+  const r = new Array(12);
+  for (let i = 0; i < 4; i++)
+    for (let j = 0; j < 3; j++) r[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j] + (i === 3 ? B[9 + j] : 0);
+  return r;
+}
+
+function parseModelXML(xml) {
+  const attrs = (s) => {
+    const o = {};
+    for (const m of s.matchAll(/([\w:]+)\s*=\s*"([^"]*)"/g)) o[m[1]] = m[2];
+    return o;
+  };
+  const unit = (/<model[^>]*\bunit="([^"]+)"/.exec(xml) || [])[1] || 'millimeter';
+  const objects = {};
+  for (const m of xml.matchAll(/<object\b([^>]*)>([\s\S]*?)<\/object>/g)) {
+    const a = attrs(m[1]);
+    const body = m[2];
+    const obj = {};
+    if (/<mesh/.test(body)) {
+      const verts = [];
+      for (const v of body.matchAll(/<vertex\b([^>]*)\/?>/g)) {
+        const p = attrs(v[1]);
+        verts.push(+p.x, +p.y, +p.z);
+      }
+      obj.vertices = Float64Array.from(verts);
+      obj.triangles = [];
+      for (const t of body.matchAll(/<triangle\b([^>]*)\/?>/g)) {
+        const p = attrs(t[1]);
+        obj.triangles.push([+p.v1, +p.v2, +p.v3]);
+      }
+    }
+    obj.components = [...body.matchAll(/<component\b([^>]*)\/?>/g)].map((c) => {
+      const p = attrs(c[1]);
+      return { objectid: p.objectid, path: p['p:path'] || null, transform: parseTransform(p.transform) };
+    });
+    objects[a.id] = obj;
+  }
+  const build = [...xml.matchAll(/<item\b([^>]*)\/?>/g)].map((it) => {
+    const p = attrs(it[1]);
+    return { objectid: p.objectid, transform: parseTransform(p.transform) };
+  });
+  return { unit, objects, build };
+}
+
+/** Minimal ZIP reader (stored + deflate) using the browser's DecompressionStream. */
+async function unzip(buffer, want) {
+  const dv = new DataView(buffer);
+  let eocd = -1;
+  for (let i = buffer.byteLength - 22; i >= Math.max(0, buffer.byteLength - 65557); i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('Not a ZIP/3MF file');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const out = {};
+  const dec = new TextDecoder();
+  for (let k = 0; k < count; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = dec.decode(new Uint8Array(buffer, p + 46, nlen));
+    p += 46 + nlen + xlen + clen;
+    if (!want(name)) continue;
+    const dataStart = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    const data = new Uint8Array(buffer, dataStart, csize);
+    let bytes;
+    if (method === 0) bytes = data;
+    else if (method === 8) bytes = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    else throw new Error('Unsupported compression in 3MF');
+    out[name] = dec.decode(bytes);
   }
   return out;
 }

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Built-in teaching models, generated procedurally so the app works offline without files.
 import * as THREE from 'three';
 

@@ -1,7 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // The settings form, generated from the schema. Every setting has an "i" button with its explanation.
-import { GROUPS, SCHEMA, MATERIALS, QUALITY_PRESETS, PRINTERS, defaultSettings } from '../core/settings.js';
+import { GROUPS, SCHEMA, QUALITY_PRESETS, profileSettings } from '../core/settings.js';
+import { PRINTER_PROFILES, materialSettings } from '../core/printers.js';
 
-const OPEN_BY_DEFAULT = new Set(['quality', 'walls', 'infill', 'support']);
+const OPEN_BY_DEFAULT = new Set(['printer', 'quality', 'walls', 'infill', 'support']);
 
 export class SettingsPanel {
   constructor(root, settings, onChange) {
@@ -21,17 +24,14 @@ export class SettingsPanel {
     head.className = 'settings-head';
     head.innerHTML = `
       <h2>Slicer settings</h2>
+      <p class="small muted" id="printer-desc"></p>
       <div class="preset-row">
-        <select id="preset-printer" aria-label="Printer">${Object.entries(PRINTERS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('')}<option value="custom">Custom printer</option></select>
         <select id="preset-quality" aria-label="Quality preset">${Object.entries(QUALITY_PRESETS).map(([k, p]) => `<option value="${k}">${p.label}</option>`).join('')}<option value="custom">Custom quality</option></select>
       </div>
       <div class="seg" role="group" aria-label="Detail level">
         <button data-level="basic">Beginner</button><button data-level="expert">All settings</button><button data-reset title="Restore all defaults">Reset</button>
       </div>`;
     r.appendChild(head);
-    head.querySelector('#preset-printer').addEventListener('change', (e) => {
-      if (PRINTERS[e.target.value]) this.emit({ ...PRINTERS[e.target.value], label: undefined });
-    });
     head.querySelector('#preset-quality').addEventListener('change', (e) => {
       if (QUALITY_PRESETS[e.target.value]) this.emit({ ...QUALITY_PRESETS[e.target.value], label: undefined });
     });
@@ -42,7 +42,7 @@ export class SettingsPanel {
         this.applyLevel();
       }),
     );
-    head.querySelector('[data-reset]').addEventListener('click', () => this.emit(defaultSettings()));
+    head.querySelector('[data-reset]').addEventListener('click', () => this.emit(profileSettings(this.settings.printer, this.settings.material)));
 
     for (const g of GROUPS) {
       const det = document.createElement('details');
@@ -95,8 +95,10 @@ export class SettingsPanel {
         if (!isFinite(v)) { this.refresh(); return; }
         v = Math.max(s.min, Math.min(s.max, v));
       }
-      const changes = { [s.key]: v };
-      if (s.key === 'material' && MATERIALS[v]) Object.assign(changes, MATERIALS[v]);
+      let changes = { [s.key]: v };
+      // a real printer loads its whole profile; a material is adapted to the printer
+      if (s.key === 'printer' && PRINTER_PROFILES[v]) changes = profileSettings(v, this.settings.material);
+      if (s.key === 'material') Object.assign(changes, materialSettings(this.settings.printer, v));
       if (s.key === 'nozzle') changes.lineWidth = Math.round(v * 1.05 * 100) / 100;
       this.emit(changes);
     });
@@ -124,7 +126,7 @@ export class SettingsPanel {
   /** Sync the form with the current settings (after presets, lessons, resets). */
   refresh() {
     const S = this.settings;
-    const defs = defaultSettings();
+    const defs = profileSettings(S.printer, S.material);
     for (const s of SCHEMA) {
       const el = this.inputs[s.key];
       if (!el) continue;
@@ -133,8 +135,8 @@ export class SettingsPanel {
       el.closest('.setting').classList.toggle('changed', S[s.key] !== defs[s.key]);
     }
     const match = (preset) => Object.entries(preset).every(([k, v]) => k === 'label' || S[k] === v);
-    const pp = Object.entries(PRINTERS).find(([, p]) => match(p));
-    this.root.querySelector('#preset-printer').value = pp ? pp[0] : 'custom';
+    const prof = PRINTER_PROFILES[S.printer];
+    this.root.querySelector('#printer-desc').textContent = prof ? prof.description : 'Custom printer: set the bed size and machine limits yourself.';
     const qp = Object.entries(QUALITY_PRESETS).find(([, p]) => match(p));
     this.root.querySelector('#preset-quality').value = qp ? qp[0] : 'custom';
   }

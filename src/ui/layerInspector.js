@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // 2D top-down drawing of one layer: outline, lost thin areas, support area, and every move in order.
 // Students can step through the moves to see the order in which the nozzle visits everything.
 import { KIND } from '../core/gcodeParser.js';

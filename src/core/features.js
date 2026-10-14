@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Feature types: what each extruded line is for. Codes are shared by the slicer, the G-code
 // writer/parser (via ";TYPE:" comments) and the viewer.
 export const FEATURE = { OTHER: 0, OUTER: 1, INNER: 2, SKIN: 3, FILL: 4, SUPPORT: 5, SKIRT: 6, PRIME: 7 };

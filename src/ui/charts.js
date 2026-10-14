@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Small charts for the Preview panel (plain SVG/HTML, no library).
 import { FEATURE_INFO } from '../core/features.js';
 import { fmtTime } from './format.js';

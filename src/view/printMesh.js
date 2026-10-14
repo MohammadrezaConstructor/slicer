@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Renders the parsed G-code: every extrusion move becomes a small "bead" of plastic.
 // All beads live in one big indexed mesh in G-code order, so showing "everything printed up to
 // move m" (simulation) or "layers a..b" (preview) is just a draw range — very cheap.
@@ -58,7 +60,12 @@ export class PrintMesh {
     const segBefore = new Uint32Array(n + 1);
     const travelBefore = new Uint32Array(n + 1);
     let segs = 0, travels = 0;
-    const useSag = (m) => sag && A && A.sagStart[m] >= 0;
+    // very large prints are drawn as thin lines instead of 3D beads to save memory
+    let extrusions = 0;
+    for (let m = 0; m < n; m++) if (P.kind[m] === KIND.EXTRUDE) extrusions++;
+    this.lineMode = extrusions > MAX_SEGMENTS;
+    this.vps = this.lineMode ? 2 : VPS;
+    const useSag = (m) => !this.lineMode && sag && A && A.sagStart[m] >= 0;
     for (let m = 0; m < n; m++) {
       segBefore[m] = segs;
       travelBefore[m] = travels;
@@ -69,8 +76,8 @@ export class PrintMesh {
     travelBefore[n] = travels;
     this.segBefore = segBefore;
     this.travelBefore = travelBefore;
-    this.tooBig = segs > MAX_SEGMENTS;
-    if (this.tooBig) return; // caller shows a message; preview falls back to nothing
+    this.tooBig = false;
+    if (this.lineMode) return this.buildLines(P, segs, travels);
 
     const pos = new Float32Array(segs * VPS * 3);
     const nrm = new Int8Array(segs * VPS * 3);
@@ -160,12 +167,37 @@ export class PrintMesh {
     this.applyColors();
   }
 
+  /** Lightweight geometry for huge prints: one coloured line per extrusion move. */
+  buildLines(P, segs, travels) {
+    const pos = new Float32Array(segs * 6);
+    const col = new Uint8Array(segs * 6);
+    const tpos = new Float32Array(travels * 6);
+    let s = 0, t = 0;
+    for (let m = 0; m < P.n; m++) {
+      if (P.kind[m] === KIND.EXTRUDE) pos.set([P.px[m], P.py[m], P.pz[m + 1], P.px[m + 1], P.py[m + 1], P.pz[m + 1]], 6 * s++);
+      else if (P.kind[m] === KIND.TRAVEL) tpos.set([P.px[m], P.py[m], P.pz[m], P.px[m + 1], P.py[m + 1], P.pz[m + 1]], 6 * t++);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3, true));
+    this.mesh = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ vertexColors: true }));
+    this.mesh.frustumCulled = false;
+    this.group.add(this.mesh);
+    const tg = new THREE.BufferGeometry();
+    tg.setAttribute('position', new THREE.BufferAttribute(tpos, 3));
+    this.travel = new THREE.LineSegments(tg, this.travelMat);
+    this.travel.frustumCulled = false;
+    this.travel.visible = false;
+    this.group.add(this.travel);
+    this.applyColors();
+  }
+
   /** Colour of move m in the current colour mode, as linear RGB. */
   moveColor(m) {
     const P = this.P, A = this.A;
     switch (this.colorMode) {
       case 'speed':
-        return rampColor((P.feed[m] - this.speedRange[0]) / Math.max(1, this.speedRange[1] - this.speedRange[0]));
+        return rampColor((actualSpeed(P, m) - this.speedRange[0]) / Math.max(1, this.speedRange[1] - this.speedRange[0]));
       case 'layertime': {
         const L = P.layers[P.layer[m]];
         return rampColor((L ? L.time : 0) / Math.max(1, this.layerTimeMax));
@@ -202,8 +234,9 @@ export class PrintMesh {
     let lo = Infinity, hi = 0, tmax = 0;
     for (let m = 0; m < P.n; m++) {
       if (P.kind[m] !== KIND.EXTRUDE) continue;
-      lo = Math.min(lo, P.feed[m]);
-      hi = Math.max(hi, P.feed[m]);
+      const v = actualSpeed(P, m);
+      lo = Math.min(lo, v);
+      hi = Math.max(hi, v);
     }
     for (let i = 1; i < P.layers.length; i++) tmax = Math.max(tmax, P.layers[i].time);
     this.speedRange = [isFinite(lo) ? lo : 0, hi];
@@ -214,8 +247,8 @@ export class PrintMesh {
       const c = this.moveColor(m);
       const r = Math.round(c.r * 255), g = Math.round(c.g * 255), b = Math.round(c.b * 255);
       for (let s = this.segBefore[m]; s < this.segBefore[m + 1]; s++) {
-        for (let v = 0; v < VPS; v++) {
-          const o = (s * VPS + v) * 3;
+        for (let v = 0; v < this.vps; v++) {
+          const o = (s * this.vps + v) * 3;
           col[o] = r;
           col[o + 1] = g;
           col[o + 2] = b;
@@ -228,7 +261,7 @@ export class PrintMesh {
   legend() {
     switch (this.colorMode) {
       case 'speed':
-        return { kind: 'ramp', title: 'Print speed', min: `${Math.round(this.speedRange?.[0] || 0)} mm/s`, max: `${Math.round(this.speedRange?.[1] || 0)} mm/s` };
+        return { kind: 'ramp', title: 'Actual speed (incl. acceleration)', min: `${Math.round(this.speedRange?.[0] || 0)} mm/s`, max: `${Math.round(this.speedRange?.[1] || 0)} mm/s` };
       case 'layertime':
         return { kind: 'ramp', title: 'Layer time', min: '0 s', max: `${Math.round(this.layerTimeMax || 0)} s` };
       case 'overair':
@@ -258,6 +291,13 @@ export class PrintMesh {
     this.s.invalidate?.();
     const P = this.P;
     const s0 = this.segBefore[m0], s1 = this.segBefore[m1];
+    if (this.lineMode) {
+      this.mesh.geometry.setDrawRange(s0 * 2, (s1 - s0) * 2);
+      const t0 = this.travelBefore[tFrom];
+      this.travel.visible = showTravel;
+      this.travel.geometry.setDrawRange(t0 * 2, (this.travelBefore[m1] - t0) * 2);
+      return;
+    }
     this.mesh.geometry.setDrawRange(s0 * IPS, (s1 - s0) * IPS);
     const t0 = this.travelBefore[tFrom], t1 = this.travelBefore[m1];
     this.travel.visible = showTravel;
@@ -301,6 +341,12 @@ export class PrintMesh {
       pg.setDrawRange(0, count * IPS);
     }
   }
+}
+
+/** Average speed the printer really reaches on move m (length / planned duration). */
+function actualSpeed(P, m) {
+  const len = Math.hypot(P.px[m + 1] - P.px[m], P.py[m + 1] - P.py[m]);
+  return P.dur[m] > 0 ? len / P.dur[m] : P.feed[m];
 }
 
 function lerpMove(P, m, f) {

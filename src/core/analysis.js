@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // "Physics-lite" analysis: is every extruded line resting on something?
 //
 // We rasterise each printed layer into an occupancy grid. For every line of the next layer we

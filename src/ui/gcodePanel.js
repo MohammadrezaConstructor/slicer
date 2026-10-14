@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 The Slicer Lab authors
 // Virtualised G-code viewer (only visible lines are in the DOM) with an edit mode.
 import { escapeHtml } from './format.js';
 
